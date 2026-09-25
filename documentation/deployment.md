@@ -114,8 +114,17 @@ openssl rand -hex 48
 | Variable | Value |
 |----------|-------|
 | `NEXT_PUBLIC_API_URL` | `"https://api.fluxforwork.live"` |
+| `AUTH_URL` | `"https://fluxforwork.live"` |
 | `AUTH_SECRET` | paste the second generated value |
 | `GOOGLE_CLIENT_ID/SECRET` | same Google client (uncomment, optional) |
+
+> **`AUTH_URL` is required for Google login.** Without it Auth.js falls back to
+> `localhost:3000`, so the `redirect_uri` sent to Google never matches the
+> authorized one and you get "access blocked" / `redirect_uri_mismatch`. This
+> was caught in production: adding `AUTH_URL` + `pm2 restart flux-frontend`
+> fixed it. (Provider sign-in is a POST in next-auth v5 — a bare
+> `GET /api/auth/signin/google` returning `error=Configuration` is normal and
+> not a health check.)
 
 > `ALLOW_DEV_USER_FALLBACK` must stay **unset or false** — production startup
 > refuses `"true"`.
