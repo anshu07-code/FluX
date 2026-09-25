@@ -109,7 +109,7 @@ sequenceDiagram
     W->>W: run node — unconfigured integration → FAILED, real error
     W->>PG: step result + next outbox row (1 tx)
 
-    Note over W,SCH: WAIT/DELAY parks the run;<br/>scheduler resumes it later. Cron only fires for ACTIVE workflows.
+    Note over W,SCH: WAIT/DELAY parks the run, the scheduler resumes it later. Cron only fires for ACTIVE workflows.
 
     W->>PG: final status
     PG-->>UI: live timeline (GET /executions/:id)
