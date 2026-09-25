@@ -295,6 +295,10 @@ npm start        # all five services; if one dies they all die
                  # (let the supervisor restart the whole stack)
 ```
 
+For a real server (Caddy + pm2 + Docker infra, step-by-step commands for
+Name.com DNS included) see
+[documentation/deployment.md](documentation/deployment.md).
+
 Things the startup code checks for you — it won't boot half-configured:
 
 - `NODE_ENV=production` (turns mocks and the dev-user fallback off)

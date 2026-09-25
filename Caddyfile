@@ -1,0 +1,12 @@
+# Caddy — automatic HTTPS, zero cert renewal work.
+# Installed on the host (apt install caddy), file lives at /etc/caddy/Caddyfile.
+# Caddy sets X-Forwarded-For / X-Forwarded-Proto itself, which is what
+# TRUST_PROXY=1 in .env relies on.
+
+fluxforwork.live {
+	reverse_proxy localhost:3000
+}
+
+api.fluxforwork.live {
+	reverse_proxy localhost:4000
+}
