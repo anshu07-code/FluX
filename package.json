@@ -1,0 +1,50 @@
+{
+  "name": "flux",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "frontend",
+    "api",
+    "processor",
+    "worker",
+    "scheduler"
+  ],
+  "scripts": {
+    "dev": "concurrently -n \"frontend,api,processor,worker,scheduler\" -c \"magenta,cyan,yellow,green,blue\" \"npm run dev:frontend\" \"npm run dev:api\" \"npm run dev:processor\" \"npm run dev:worker\" \"npm run dev:scheduler\"",
+    "dev:frontend": "npm run dev --workspace=frontend",
+    "dev:api": "npm run dev --workspace=api",
+    "dev:processor": "npm run dev --workspace=processor",
+    "dev:worker": "npm run dev --workspace=worker",
+    "dev:scheduler": "npm run dev --workspace=scheduler",
+    "typecheck": "npm run typecheck --workspaces --if-present && tsc -p tsconfig.scripts.json",
+    "build": "npm run prisma:generate && npm run build --workspace=frontend && npm run build --workspace=api && npm run build --workspace=processor && npm run build --workspace=worker && npm run build --workspace=scheduler",
+    "start": "concurrently --kill-others-on-fail -n \"frontend,api,processor,worker,scheduler\" -c \"magenta,cyan,yellow,green,blue\" \"npm run start --workspace=frontend\" \"npm run start --workspace=api\" \"npm run start --workspace=processor\" \"npm run start --workspace=worker\" \"npm run start --workspace=scheduler\"",
+    "postinstall": "npm run prisma:generate",
+    "seed:real": "tsx scripts/seed-real-db.ts",
+    "templates:validate": "tsx scripts/validate-templates.ts",
+    "templates:test": "tsx scripts/test-all-templates.ts",
+    "e2e:distributed": "tsx scripts/e2e-distributed-run.ts",
+    "e2e:account": "tsx scripts/e2e-account-lifecycle.ts",
+    "e2e:fail-loud": "tsx scripts/e2e-prod-fail-loud.ts",
+    "start:frontend": "npm run start --workspace=frontend",
+    "start:api": "npm run start --workspace=api",
+    "start:processor": "npm run start --workspace=processor",
+    "start:worker": "npm run start --workspace=worker",
+    "start:scheduler": "npm run start --workspace=scheduler",
+    "migrate": "prisma migrate deploy --schema prisma/schema.prisma",
+    "migrate:dev": "prisma migrate dev --schema prisma/schema.prisma",
+    "lint": "npm run lint --workspace=frontend",
+    "test": "npm run test --workspace=api",
+    "prisma:generate": "prisma generate --schema prisma/schema.prisma",
+    "prisma:validate": "prisma validate --schema prisma/schema.prisma"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.6.0",
+    "kafkajs": "^2.2.4"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.4",
+    "prisma": "^6.6.0",
+    "typescript": "^5.8.3"
+  }
+}

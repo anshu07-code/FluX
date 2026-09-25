@@ -1,0 +1,12 @@
+{
+  "name": "@flux/processor",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/processor/src/index.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": { "@types/node": "^22.15.2", "tsx": "^4.19.3" }
+}

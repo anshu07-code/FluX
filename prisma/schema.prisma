@@ -1,0 +1,319 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum WorkflowStatus {
+  DRAFT
+  ACTIVE
+  ARCHIVED
+}
+
+enum ExecutionStatus {
+  PENDING
+  RUNNING
+  SUCCESS
+  FAILED
+  CANCELLED
+}
+
+enum NodeExecutionStatus {
+  PENDING
+  RUNNING
+  WAITING
+  SUCCESS
+  FAILED
+  SKIPPED
+}
+
+model User {
+  id            String     @id @default(uuid())
+  email         String     @unique
+  name          String?
+  password      String?
+  provider      String     @default("email")
+  providerId    String?
+  image         String?
+  emailVerified DateTime?
+  role          String     @default("user")
+  // Password reset: only the SHA-256 hash of the emailed token is stored, so a
+  // database leak cannot be replayed as a reset. Single-use, time-boxed.
+  passwordResetToken   String?
+  passwordResetExpires DateTime?
+  // Per-user settings from the Settings page (notification channels etc).
+  // Shape is validated on write; see api/src/preferences.ts.
+  preferences   Json?
+  workflows     Workflow[]
+  accounts      Account[]
+  sessions      Session[]
+  activityLogs  ActivityLog[]
+  apiKeys       ApiKey[]
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+
+  @@index([provider, providerId])
+}
+
+model Account {
+  id                String  @id @default(uuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(uuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model ActivityLog {
+  id        String   @id @default(uuid())
+  userId    String
+  action    String
+  resource  String
+  resourceId String?
+  details   Json?
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@index([action, createdAt])
+}
+
+model Workflow {
+  id         String              @id @default(uuid())
+  name       String
+  userId     String
+  status     WorkflowStatus      @default(DRAFT)
+  version    Int                 @default(1)
+  user       User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  nodes      WorkflowNode[]
+  edges      WorkflowEdge[]
+  executions WorkflowExecution[]
+  createdAt  DateTime            @default(now())
+  updatedAt  DateTime            @updatedAt
+  lastScheduledRunAt DateTime?
+
+  @@index([userId, status])
+}
+
+model ApiKey {
+  id           String    @id @default(uuid())
+  userId       String
+  name         String
+  keyHash      String    @unique
+  keyPrefix    String
+  lastUsedAt   DateTime?
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt    DateTime  @default(now())
+
+  @@index([userId])
+}
+
+model WorkflowNode {
+  id              String          @id @default(uuid())
+  workflowId      String
+  type            String
+  name            String
+  config          Json            @default("{}")
+  position        Json            @default("{}")
+  sortOrder       Int             @default(0)
+  workflow        Workflow        @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  sourceEdges     WorkflowEdge[]  @relation("SourceNode")
+  targetEdges     WorkflowEdge[]  @relation("TargetNode")
+  nodeExecutions  NodeExecution[]
+  deadLetterEvents DeadLetterEvent[]
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  @@index([workflowId, type])
+}
+
+model WorkflowEdge {
+  id           String       @id @default(uuid())
+  workflowId   String
+  sourceNodeId String
+  targetNodeId String
+  config       Json       @default("{}")
+  sortOrder    Int          @default(0)
+  workflow     Workflow     @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  sourceNode   WorkflowNode @relation("SourceNode", fields: [sourceNodeId], references: [id], onDelete: Cascade)
+  targetNode   WorkflowNode @relation("TargetNode", fields: [targetNodeId], references: [id], onDelete: Cascade)
+  createdAt    DateTime     @default(now())
+
+  @@unique([workflowId, sourceNodeId, targetNodeId])
+  @@index([workflowId, targetNodeId])
+}
+
+model WorkflowExecution {
+  id             String          @id @default(uuid())
+  workflowId     String
+  workflowVersion Int
+  status         ExecutionStatus @default(PENDING)
+  idempotencyKey String
+  error          String?
+  workflow       Workflow        @relation(fields: [workflowId], references: [id], onDelete: Restrict)
+  nodeExecutions NodeExecution[]
+  deadLetterEvents DeadLetterEvent[]
+  startedAt      DateTime?
+  completedAt    DateTime?
+  // Exactly-once claim for the failure alert (email/Slack). The first process
+  // to set this owns sending; prevents duplicate alerts on Kafka redelivery.
+  failureNotifiedAt DateTime?
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  @@unique([workflowId, idempotencyKey])
+  @@index([status, createdAt])
+  @@index([workflowId, createdAt])
+}
+
+model NodeExecution {
+  id          String              @id @default(uuid())
+  executionId String
+  nodeId      String
+  status      NodeExecutionStatus @default(PENDING)
+  attempt     Int                 @default(0)
+  input       Json?
+  output      Json?
+  error       String?
+  execution   WorkflowExecution   @relation(fields: [executionId], references: [id], onDelete: Cascade)
+  node        WorkflowNode        @relation(fields: [nodeId], references: [id], onDelete: Restrict)
+  startedAt   DateTime?
+  completedAt DateTime?
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+
+  @@unique([executionId, nodeId, attempt])
+  @@index([executionId, status])
+}
+
+model OutboxEvent {
+  id          String    @id @default(uuid())
+  eventType   String
+  aggregateId String
+  payload     Json
+  processedAt DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@index([processedAt, createdAt])
+  @@index([aggregateId, eventType])
+}
+
+model WorkflowTemplate {
+  id          String   @id @default(uuid())
+  name        String
+  description String
+  category    String
+  nodes       Json
+  edges       Json
+  authorName  String
+  authorImage String?
+  downloads   Int      @default(0)
+  featured    Boolean  @default(false)
+  tags        String[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([category, featured])
+  @@index([downloads])
+}
+
+// Demo dataset tables for workflow demos, created via raw SQL (not by the
+// Prisma client). Kept in the schema with @@ignore so `migrate dev` never
+// proposes dropping them; the client does not generate types for them.
+// Their DDL is codified in the init migration to keep history == database.
+
+/// Demo table: customer records. Managed via raw SQL; ignored by Prisma Client.
+model customers {
+  id          Int       @id @default(autoincrement())
+  name        String    @db.VarChar(255)
+  email       String?   @db.VarChar(255)
+  tier        String?   @default("standard") @db.VarChar(50)
+  status      String?   @default("active") @db.VarChar(50)
+  total_spent Decimal?  @default(0) @db.Decimal(10, 2)
+  created_at  DateTime? @default(now()) @db.Timestamp()
+
+  @@ignore
+}
+
+/// Demo table: orders. Managed via raw SQL; ignored by Prisma Client.
+model orders {
+  id          Int       @id @default(autoincrement())
+  customer_id Int?
+  amount      Decimal?  @db.Decimal(10, 2)
+  status      String?   @default("pending") @db.VarChar(50)
+  created_at  DateTime? @default(now()) @db.Timestamp()
+
+  @@ignore
+}
+
+/// Demo table: support tickets. Managed via raw SQL; ignored by Prisma Client.
+model tickets {
+  id          Int       @id @default(autoincrement())
+  customer_id Int?
+  subject     String?   @db.VarChar(500)
+  description String?
+  priority    String?   @default("medium") @db.VarChar(50)
+  status      String?   @default("open") @db.VarChar(50)
+  assigned_to String?   @db.VarChar(255)
+  created_at  DateTime? @default(now()) @db.Timestamp()
+
+  @@ignore
+}
+
+model DeadLetterEvent {
+  id          String             @id @default(uuid())
+  executionId String
+  nodeId      String
+  payload     Json
+  error       String
+  attempts    Int
+  execution   WorkflowExecution  @relation(fields: [executionId], references: [id], onDelete: Cascade)
+  node        WorkflowNode       @relation(fields: [nodeId], references: [id], onDelete: Restrict)
+  createdAt   DateTime           @default(now())
+
+  @@index([executionId, nodeId])
+}
+
+/// Durable dedup store for Idempotency nodes. An atomic INSERT … ON CONFLICT
+/// is the claim: the first writer wins, so duplicates are detected correctly
+/// across worker replicas and after restarts.
+model IdempotencyKey {
+  id        String   @id
+  nodeId    String
+  key       String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([expiresAt])
+}
+
+/// Shared fixed-window rate-limit counters. Postgres-backed so the limit is
+/// the SAME across multiple API instances (in-memory counters would each
+/// allow the full budget separately).
+model RateLimitCounter {
+  key     String   @id
+  count   Int      @default(0)
+  resetAt DateTime
+
+  @@index([resetAt])
+}
