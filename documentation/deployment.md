@@ -16,9 +16,26 @@ Containers (docker):  PostgreSQL · Kafka   ← bound to 127.0.0.1 only
 
 - A VPS: **2 vCPU / 4 GB RAM**, Ubuntu 24.04 (2 GB is tight — Kafka + Postgres
   + five Node processes add up). Examples: Hetzner CX22 (~$5), DigitalOcean
-  Droplet 2GB ($12), AWS Lightsail ($10).
+  Droplet 2GB ($12), AWS Lightsail ($10), Azure VM (~$28).
 - Your domain's DNS panel (Name.com for `fluxforwork.live`).
 - ~30 minutes.
+
+### Azure note (student $100 credit)
+
+The Azure for Students subscription blocks some sizes per region, so:
+
+- **Region: West US**, size **B2als_v2** (2 vCPU / 4 GiB, ~US$27.45/month →
+  the $100 credit lasts ~3.5 months of continuous run). East US did not offer
+  B-series sizes to this subscription — West US did.
+- Inbound NSG rules: **22, 80, 443 only** (5432/9092 stay localhost).
+- Auth: "Generate new key pair" downloads `FluX_key.pem` on create. Connect
+  with `ssh -i ~/Downloads/FluX_key.pem azureuser@<IP>`. On Windows, if ssh
+  complains the key is too open, run
+  `icacls $HOME\Downloads\FluX_key.pem /inheritance:r /grant:r "$env:USERNAME:R"`.
+  Azure's username is `azureuser`, not root — either prefix the commands in
+  step 2 with `sudo`, or start with `sudo -i` once and run them as root.
+- Idle **Stop (deallocate)** the VM to pause compute charges (~$8-10/month of
+  disk/IP remains) — credit stretches much further.
 
 ## 1. DNS (Name.com)
 
@@ -34,7 +51,8 @@ webhook URLs) derives from these two.
 
 ## 2. Server bootstrap (one time)
 
-SSH in (`ssh root@<server-ip>` from PowerShell/Mac/Linux) and run:
+SSH in (`ssh root@<server-ip>` — on Azure: `ssh azureuser@<server-ip>`; from
+PowerShell/Mac/Linux) and run:
 
 ```bash
 # system updates + firewall (SSH, HTTP, HTTPS only)
