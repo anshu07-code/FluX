@@ -29,11 +29,13 @@ The Azure for Students subscription blocks some sizes per region, so:
   B-series sizes to this subscription — West US did.
 - Inbound NSG rules: **22, 80, 443 only** (5432/9092 stay localhost).
 - Auth: "Generate new key pair" downloads `FluX_key.pem` on create. Connect
-  with `ssh -i ~/Downloads/FluX_key.pem azureuser@<IP>`. On Windows, if ssh
+  with `ssh -i ~/Downloads/FluX_key.pem <admin-user>@<IP>` — the admin user is
+  whatever you set at creation (the Azure default is `azureuser`; ours ended up
+  as `anshu07`, discoverable via `getent passwd 1000`). On Windows, if ssh
   complains the key is too open, run
   `icacls $HOME\Downloads\FluX_key.pem /inheritance:r /grant:r "$env:USERNAME:R"`.
-  Azure's username is `azureuser`, not root — either prefix the commands in
-  step 2 with `sudo`, or start with `sudo -i` once and run them as root.
+  That account is not root — either prefix the commands in step 2 with `sudo`,
+  or start with `sudo -i` once and run them as root.
 - Idle **Stop (deallocate)** the VM to pause compute charges (~$8-10/month of
   disk/IP remains) — credit stretches much further.
 
@@ -51,7 +53,7 @@ webhook URLs) derives from these two.
 
 ## 2. Server bootstrap (one time)
 
-SSH in (`ssh root@<server-ip>` — on Azure: `ssh azureuser@<server-ip>`; from
+SSH in (`ssh root@<server-ip>` — on Azure: `ssh <admin-user>@<server-ip>`; from
 PowerShell/Mac/Linux) and run:
 
 ```bash
