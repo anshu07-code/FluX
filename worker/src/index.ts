@@ -62,7 +62,13 @@ async function start() {
   console.log(`Starting FluX Worker... Connecting to Kafka at ${kafkaBrokers.join(",")}`);
   await connectWithRetry();
 
-  await consumer.subscribe({ topic: EXECUTION_TOPIC, fromBeginning: false });
+  // fromBeginning: true — with no committed offset for a partition (first
+  // event ever, or a restart while backlog was uncommitted), start from the
+  // earliest offset instead of the high watermark. Committed offsets always
+  // win, so this only affects partitions we have never committed for.
+  // fromBeginning: false silently dropped events that were published while
+  // the worker was down — executions hung in PENDING forever.
+  await consumer.subscribe({ topic: EXECUTION_TOPIC, fromBeginning: true });
   console.log(`Subscribed to topic: ${EXECUTION_TOPIC}`);
 
   const shutdown = async () => {
