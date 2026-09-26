@@ -264,11 +264,20 @@ function normalizeOperator(value: unknown): string {
 
 function executeCondition(node: WorkflowNode, input: Prisma.JsonValue | undefined): Prisma.JsonValue {
   const config = configFor(node);
-  const rawPath = resolveTemplateString(config.inputPath ?? config.leftValue ?? "value", input);
-  const inputPath = typeof rawPath === "string" && rawPath.length > 0 ? rawPath : "value";
+  const rawLeft = config.inputPath ?? config.leftValue ?? "value";
   const thresholdRaw = config.value ?? config.rightValue;
   const operator = normalizeOperator(config.operator);
-  const actual = valueAt(input, inputPath);
+  // Left side: a bare dot-path (e.g. "output.status") is looked up in the
+  // input; a {{template}} (the UI's placeholder style) is evaluated and used
+  // as the value itself — resolving it and then treating the result as a path
+  // would look up e.g. the literal "true" as a key and always miss.
+  let actual: unknown;
+  if (typeof rawLeft === "string" && rawLeft.includes("{{")) {
+    const resolved = resolveTemplateString(rawLeft, input);
+    actual = typeof resolved === "string" && resolved.includes("{{") ? undefined : resolved;
+  } else {
+    actual = valueAt(input, typeof rawLeft === "string" && rawLeft.length > 0 ? rawLeft : "value");
+  }
 
   let result: boolean;
   if (operator === "empty") {
@@ -787,7 +796,23 @@ async function executeAi(node: WorkflowNode, input: Prisma.JsonValue | undefined
     const data = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> };
     const content = data.choices?.[0]?.message?.content;
     if (typeof content !== "string") return mockFallback("AI provider returned an empty response.");
-    return asJson({ provider, model: base, result: content.slice(0, 4_000), usingUserKey: !!userApiKey });
+    let result: unknown = content.slice(0, 4_000);
+    if (jsonMode) {
+      try {
+        const parsed: unknown = JSON.parse(content);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          // JSON mode: expose the parsed fields at the top level so downstream
+          // nodes and branch conditions can reference them directly ({{service}})
+          // — and so they survive a condition node, which spreads its input but
+          // overwrites `result` with the boolean branch value.
+          return asJson({ ...(parsed as Record<string, unknown>), provider, model: base, usingUserKey: !!userApiKey, result: parsed });
+        }
+        result = parsed;
+      } catch {
+        // Provider advertised JSON mode but returned non-JSON — keep the raw text.
+      }
+    }
+    return asJson({ provider, model: base, result, usingUserKey: !!userApiKey });
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") return mockFallback("AI request timed out.");
     return mockFallback(`AI request failed: ${(error instanceof Error ? error.message : "Unknown AI error.").slice(0, 200)}`);
