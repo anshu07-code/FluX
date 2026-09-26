@@ -72,3 +72,38 @@ describe("Condition node left value", () => {
     expect(output.result).toBe(false);
   });
 });
+
+describe("Context passthrough", () => {
+  it("action nodes keep fields from their input so chains can still reference them", async () => {
+    const output = (await executeNode(
+      {
+        id: "http-test",
+        type: "http",
+        name: "HTTP",
+        config: { url: "https://example.com", method: "GET", mockResponse: { value: 8 } },
+        position: { x: 0, y: 0 },
+      } as unknown as WorkflowNode,
+      { service: "payment-api", trigger: { body: { service: "payment-api" } } }
+    )) as Record<string, unknown>;
+
+    expect(output.service).toBe("payment-api");
+    expect(output.trigger).toEqual({ body: { service: "payment-api" } });
+    expect(output.body).toBeDefined();
+  });
+
+  it("the node's own output keys still win over the input", async () => {
+    const output = (await executeNode(
+      {
+        id: "set-test",
+        type: "set",
+        name: "Set",
+        config: { assignments: { status: "OWNED" }, keepOnlySet: false },
+        position: { x: 0, y: 0 },
+      } as unknown as WorkflowNode,
+      { status: "FROM_INPUT", keep: "me" }
+    )) as Record<string, unknown>;
+
+    expect(output.status).toBe("OWNED");
+    expect(output.keep).toBe("me");
+  });
+});

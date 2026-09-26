@@ -821,10 +821,10 @@ async function executeAi(node: WorkflowNode, input: Prisma.JsonValue | undefined
   }
 }
 
-export async function executeNode(
+async function runNodeCore(
   node: WorkflowNode,
   input: Prisma.JsonValue | undefined,
-  ctx: ExecutionContext = {}
+  ctx: ExecutionContext
 ): Promise<Prisma.JsonValue> {
   switch (node.type) {
     case "trigger":
@@ -1293,4 +1293,24 @@ export async function executeNode(
     default:
       throw new NodeExecutionError(`Unsupported node type: ${node.type}.`);
   }
+}
+
+/**
+ * Executes one node with **context passthrough**: the node's own output keys
+ * win, but every field the node received is kept. Downstream nodes and branch
+ * conditions can therefore reference data from any earlier node ({{service}},
+ * {{trigger.body.*}}, …) even through chains like condition → http → slack →
+ * database, where each node previously replaced the context and silently
+ * blanked every reference. Branching/merging nodes already spread their input,
+ * so for them this merge is a no-op.
+ */
+export async function executeNode(
+  node: WorkflowNode,
+  input: Prisma.JsonValue | undefined,
+  ctx: ExecutionContext = {}
+): Promise<Prisma.JsonValue> {
+  const output = await runNodeCore(node, input, ctx);
+  if (!input || typeof input !== "object" || Array.isArray(input)) return output;
+  if (!output || typeof output !== "object" || Array.isArray(output)) return output;
+  return { ...(input as Record<string, unknown>), ...(output as Record<string, unknown>) } as Prisma.JsonValue;
 }
