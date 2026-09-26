@@ -203,7 +203,8 @@ export async function handleNodeExecutionEvent(
     node,
     (nodeExecution.input ?? {}) as Prisma.JsonValue,
     outgoingEdges,
-    entry?.id === nodeId
+    entry?.id === nodeId,
+    { ownerId: workflow.userId }
   );
 
   // 3. Atomically update state and create next NodeExecution(s) + OutboxEvent(s)

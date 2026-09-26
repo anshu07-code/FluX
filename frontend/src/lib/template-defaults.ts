@@ -92,6 +92,8 @@ export function defaultNodeConfig(type: string): Record<string, unknown> {
         operation: "findMany",
         // "customers" is a real seeded Postgres table (see scripts/seed-real-db).
         table: "customers",
+        // Create operations build missing tables/columns automatically.
+        autoCreate: true,
       };
 
     case "error":

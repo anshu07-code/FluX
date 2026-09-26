@@ -379,7 +379,14 @@ export const nodeCatalog: Record<WorkflowNodeType, NodeCatalogEntry> = {
         required: true,
         defaultValue: "customers",
         placeholder: "customers",
-        description: "Database table name. Available: customers, tickets, orders, employees, products, invoices.",
+        description: "Database table name. A Create node with Auto-Create Table builds missing tables automatically. Seeded demo tables: customers, tickets, orders.",
+      },
+      {
+        key: "autoCreate",
+        label: "Auto-Create Table",
+        type: "toggle",
+        defaultValue: true,
+        description: "When on, a Create operation creates a missing table (and any missing columns) automatically on first run — including an owner_id column so rows stay private to this workflow's owner. When off, the table must already exist.",
       },
       {
         key: "where",

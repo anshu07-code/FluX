@@ -1,5 +1,5 @@
 import type { Prisma, WorkflowEdge, WorkflowNode } from "@prisma/client";
-import { executeNode, waitUntilOf } from "./node-executors.js";
+import { executeNode, waitUntilOf, type ExecutionContext } from "./node-executors.js";
 
 /**
  * Node types that expose more than one output and must route based on their
@@ -81,10 +81,11 @@ export async function executeNodeStep(
   node: WorkflowNode,
   input: Prisma.JsonValue | undefined,
   outgoingEdges: WorkflowEdge[],
-  isEntry = false
+  isEntry = false,
+  ctx: ExecutionContext = {}
 ): Promise<NodeExecutionStepResult> {
   try {
-    const output = isEntry ? (input ?? {}) : await executeNode(node, input);
+    const output = isEntry ? (input ?? {}) : await executeNode(node, input, ctx);
     if (!isEntry && (node.type === "delay" || node.type === "wait")) {
       // Durable wait: pause the graph here; the scheduler resumes it at waitUntil.
       const waitUntil = waitUntilOf(output);

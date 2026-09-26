@@ -3,6 +3,7 @@ import { ZodError } from "zod";
 import { listWorkflowExecutionsHandler, runWorkflowHandler } from "../execution/router.js";
 import { workflowInputSchema, validateGraph } from "./schema.js";
 import { WorkflowNotFoundError, createWorkflow, deleteWorkflow, getWorkflow, listWorkflows, updateWorkflow, updateWorkflowStatus } from "./service.js";
+import { validateDatabaseNodes } from "./validate-db-nodes.js";
 import { resolveAuthUser } from "../development-user.js";
 import { credentialKey, rateLimit } from "../rate-limit.js";
 import { prisma } from "../db.js";
@@ -19,7 +20,10 @@ function parseWorkflow(body: unknown) {
 workflowRouter.post("/", async (request, response, next) => {
   try {
     const { userId } = await resolveAuthUser(request.headers as Record<string, string | undefined>, prisma);
-    const workflow = await createWorkflow(parseWorkflow(request.body), userId);
+    const input = parseWorkflow(request.body);
+    const dbError = await validateDatabaseNodes(input.nodes);
+    if (dbError) return response.status(400).json({ error: dbError });
+    const workflow = await createWorkflow(input, userId);
     response.status(201).json({ workflow });
   } catch (error) { next(error); }
 });
@@ -41,7 +45,10 @@ workflowRouter.get("/:id", async (request, response, next) => {
 workflowRouter.put("/:id", async (request, response, next) => {
   try {
     const { userId } = await resolveAuthUser(request.headers as Record<string, string | undefined>, prisma);
-    response.json({ workflow: await updateWorkflow(request.params.id, parseWorkflow(request.body), userId) });
+    const input = parseWorkflow(request.body);
+    const dbError = await validateDatabaseNodes(input.nodes);
+    if (dbError) return response.status(400).json({ error: dbError });
+    response.json({ workflow: await updateWorkflow(request.params.id, input, userId) });
   } catch (error) { next(error); }
 });
 
@@ -68,6 +75,13 @@ workflowRouter.patch("/:id/status", async (request, response, next) => {
     const { status } = request.body as { status?: string };
     if (status !== "ACTIVE" && status !== "DRAFT" && status !== "ARCHIVED") {
       return response.status(400).json({ error: "Status must be ACTIVE, DRAFT, or ARCHIVED." });
+    }
+    // A workflow may only go live if its database nodes point at real tables
+    // and columns — this is the last gate before webhooks/schedulers can fire it.
+    if (status === "ACTIVE") {
+      const current = await getWorkflow(request.params.id, userId);
+      const dbError = await validateDatabaseNodes(current.nodes);
+      if (dbError) return response.status(400).json({ error: dbError });
     }
     const workflow = await updateWorkflowStatus(request.params.id, status, userId);
     response.json({ workflow });

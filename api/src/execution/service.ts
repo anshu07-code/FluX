@@ -132,7 +132,7 @@ async function walkSteps(executionId: string, execution: ExecutionWithGraph, ste
     await prisma.nodeExecution.update({ where: { id: record.id }, data: { status: "RUNNING", input: (input ?? {}) as Prisma.InputJsonValue, startedAt: new Date() } });
 
     const nodeOutgoing = outgoing.get(nodeId) ?? [];
-    const stepResult = await executeNodeStep(node, input, nodeOutgoing, isEntry);
+    const stepResult = await executeNodeStep(node, input, nodeOutgoing, isEntry, { ownerId: execution.workflow.userId });
 
     if (stepResult.status === "SUCCESS") {
       await prisma.nodeExecution.update({ where: { id: record.id }, data: { status: "SUCCESS", output: stepResult.output as Prisma.InputJsonValue, completedAt: new Date() } });

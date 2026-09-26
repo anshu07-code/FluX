@@ -6,8 +6,30 @@ import jwt from "jsonwebtoken";
 import { prisma } from "../db.js";
 import { getSmtpTransporter } from "../mail.js";
 import { getJwtSecret } from "../development-user.js";
+import {
+  INTERNAL_TABLES,
+  createTableIfMissing,
+  ensureDataColumns,
+  extractPgCode,
+  fetchTableColumns,
+  friendlyDbError,
+  isValidTableName,
+  listBusinessTables,
+  planDataColumns,
+  serializeParam,
+} from "./db-support.js";
 
 type Config = Record<string, unknown>;
+
+/**
+ * Per-execution facts threaded from the runners into node executors.
+ * `ownerId` scopes database access: auto-created tables get an owner_id
+ * column that is stamped and filtered by the workflow's owner, so two users
+ * on a shared FluX instance never see each other's rows.
+ */
+export interface ExecutionContext {
+  ownerId?: string | null;
+}
 
 /** Safe cast for return objects whose shapes are correct but TS can't prove it. */
 function asJson(value: Record<string, unknown>): Prisma.JsonValue {
@@ -774,7 +796,11 @@ async function executeAi(node: WorkflowNode, input: Prisma.JsonValue | undefined
   }
 }
 
-export async function executeNode(node: WorkflowNode, input: Prisma.JsonValue | undefined): Promise<Prisma.JsonValue> {
+export async function executeNode(
+  node: WorkflowNode,
+  input: Prisma.JsonValue | undefined,
+  ctx: ExecutionContext = {}
+): Promise<Prisma.JsonValue> {
   switch (node.type) {
     case "trigger":
       return input ?? {};
@@ -1022,7 +1048,18 @@ export async function executeNode(node: WorkflowNode, input: Prisma.JsonValue | 
           const rows = await prisma.$queryRawUnsafe(rawSql);
           return asJson({ status: "SUCCESS" as const, output: { records: rows, count: (rows as unknown[]).length } });
         } catch (dbError) {
-          throw new NodeExecutionError(`Raw Query failed: ${dbError instanceof Error ? dbError.message : "unknown DB error"}`);
+          const code = extractPgCode(dbError);
+          const raw = dbError instanceof Error ? dbError.message : "unknown DB error";
+          if (code === "42P01") {
+            const available = await listBusinessTables();
+            throw new NodeExecutionError(
+              `Raw Query failed: a table in the statement does not exist. Existing tables: ${available.length > 0 ? available.join(", ") : "none"}.`
+            );
+          }
+          if (code === "42703") {
+            throw new NodeExecutionError("Raw Query failed: a column in the statement does not exist. Check the column names against the table's schema.");
+          }
+          throw new NodeExecutionError(`Raw Query failed: ${raw}`);
         }
       }
 
@@ -1038,18 +1075,48 @@ export async function executeNode(node: WorkflowNode, input: Prisma.JsonValue | 
       // Safety: allow any real table, but only when the name is a plain SQL
       // identifier (prevents injection — values are parameterized separately)
       // and never FluX's own internal tables (they store credentials/hashes).
-      const INTERNAL_TABLES = new Set([
-        "user", "account", "session", "activitylog", "workflow", "workflownode",
-        "workflowedge", "workflowexecution", "nodeexecution", "outboxevent",
-        "workflowtemplate", "deadeletevent", "apikey", "_prisma_migrations",
-      ]);
-      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(table)) {
+      if (!isValidTableName(table)) {
         throw new NodeExecutionError(`Table name "${table}" is invalid. Use only letters, digits and underscores.`);
       }
       if (INTERNAL_TABLES.has(table.toLowerCase())) {
         throw new NodeExecutionError(`Table "${table}" is a FluX internal table and cannot be queried.`);
       }
       const safeTable = table;
+      const autoCreate = dbConfig.autoCreate !== false;
+
+      // Insert/update payload: prefer explicit UI "Data to Save", fall back to node input.
+      const resolveData = (): Record<string, unknown> => {
+        const dataObj = dbConfig.data;
+        if (dataObj && typeof dataObj === "object" && !Array.isArray(dataObj)) {
+          return resolveTemplateDeep(dataObj, input) as Record<string, unknown>;
+        }
+        return (input && typeof input === "object" && !Array.isArray(input) ? input : {}) as Record<string, unknown>;
+      };
+
+      // Writes plan their columns first (sanitized keys + inferred types) so a
+      // missing table/column can be created instead of failing the run.
+      const data = operation === "create" || operation === "update" ? resolveData() : null;
+      const planResult = data ? planDataColumns(data) : null;
+      if (planResult?.error) throw new NodeExecutionError(planResult.error);
+      const plan = planResult?.plan ?? [];
+
+      // Column metadata: drives owner scoping, schema-on-write and friendly errors.
+      let tableColumns = await fetchTableColumns(safeTable);
+      if (!tableColumns) {
+        if (operation === "create" && autoCreate && plan.length > 0) {
+          tableColumns = await createTableIfMissing(safeTable, plan);
+        } else {
+          const available = await listBusinessTables();
+          throw new NodeExecutionError(
+            `Table "${safeTable}" does not exist. Existing tables: ${available.length > 0 ? available.join(", ") : "none"}. ` +
+              (operation === "create"
+                ? 'Enable "Auto-Create Table" on this node to have FluX create it automatically on the next run.'
+                : "Set a Table that exists, or add a Create node with \"Auto-Create Table\" enabled to create it first.")
+          );
+        }
+      } else if (plan.length > 0 && (operation === "create" || operation === "update") && autoCreate) {
+        tableColumns = await ensureDataColumns(safeTable, plan, tableColumns);
+      }
 
       // Build WHERE clause from config.
       const conditions: string[] = [];
@@ -1097,17 +1164,25 @@ export async function executeNode(node: WorkflowNode, input: Prisma.JsonValue | 
       const filterValue = dbConfig.filterValue;
       if (filterField && filterValue !== undefined) addEqCondition(filterField, filterValue);
 
+      // Filters explicitly written by the user (used to enforce the
+      // update/delete "never touch every row" rule even after owner scoping).
+      const userConditionCount = conditions.length;
+
+      // Owner scoping: tables that carry an owner_id column only ever expose the
+      // current workflow owner's rows (fail-closed: no owner → owner_id IS NULL).
+      // Legacy demo tables (customers/orders/tickets) have no owner_id and stay shared.
+      if (operation !== "create" && tableColumns.has("owner_id")) {
+        if (ctx.ownerId) {
+          conditions.push(`"owner_id" = $${paramIdx}`);
+          params.push(ctx.ownerId);
+          paramIdx++;
+        } else {
+          conditions.push(`"owner_id" IS NULL`);
+        }
+      }
+
       const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
       const limit = typeof dbConfig.limit === "number" ? Math.min(dbConfig.limit, 100) : 50;
-
-      // Insert/update payload: prefer explicit UI "Data to Save", fall back to node input.
-      const resolveData = (): Record<string, unknown> => {
-        const dataObj = dbConfig.data;
-        if (dataObj && typeof dataObj === "object" && !Array.isArray(dataObj)) {
-          return resolveTemplateDeep(dataObj, input) as Record<string, unknown>;
-        }
-        return (input && typeof input === "object" && !Array.isArray(input) ? input : {}) as Record<string, unknown>;
-      };
 
       try {
           switch (operation) {
@@ -1123,30 +1198,50 @@ export async function executeNode(node: WorkflowNode, input: Prisma.JsonValue | 
               return asJson({ status: "SUCCESS" as const, output: { record: rows[0] ?? null, table: safeTable } });
             }
             case "create": {
-              const data = resolveData();
-              const fields = Object.keys(data).filter((k) => /^[a-zA-Z0-9_]+$/.test(k));
-              if (fields.length === 0) throw new NodeExecutionError("Create requires data fields. Set 'Data to Save' in the node config.");
-              const colNames = fields.map(f => `"${f}"`).join(", ");
-              const placeholders = fields.map((_, i) => `$${i + 1}`).join(", ");
-              const values = fields.map(f => data[f]);
-              const rows = await prisma.$queryRawUnsafe(`INSERT INTO "${safeTable}" (${colNames}) VALUES (${placeholders}) RETURNING *`, ...values) as unknown[];
+              if (plan.length === 0) throw new NodeExecutionError("Create requires data fields. Set 'Data to Save' in the node config.");
+              const names: string[] = [];
+              const placeholders: string[] = [];
+              const values: unknown[] = [];
+              let idx = 1;
+              for (const column of plan) {
+                const serialized = serializeParam(data![column.sourceKey], tableColumns.get(column.key));
+                names.push(`"${column.key}"`);
+                placeholders.push(`$${idx}${serialized.cast}`);
+                values.push(serialized.value);
+                idx++;
+              }
+              if (tableColumns.has("owner_id")) {
+                names.push(`"owner_id"`);
+                placeholders.push(`$${idx}`);
+                values.push(ctx.ownerId ?? null);
+              }
+              const rows = await prisma.$queryRawUnsafe(
+                `INSERT INTO "${safeTable}" (${names.join(", ")}) VALUES (${placeholders.join(", ")}) RETURNING *`,
+                ...values
+              ) as unknown[];
               return asJson({ status: "SUCCESS" as const, output: { record: rows[0], created: true, table: safeTable } });
             }
             case "update": {
-              const data = resolveData();
-              const fields = Object.keys(data).filter((k) => /^[a-zA-Z0-9_]+$/.test(k));
-              if (fields.length === 0) throw new NodeExecutionError("Update requires data fields. Set 'Data to Save' in the node config.");
-              if (conditions.length === 0) {
+              if (plan.length === 0) throw new NodeExecutionError("Update requires data fields. Set 'Data to Save' in the node config.");
+              if (userConditionCount === 0) {
                 throw new NodeExecutionError("Update requires filter conditions — refusing to update every row. Set 'Filter Conditions' in the node config.");
               }
-              const setClauses = fields.map((f, i) => `"${f}" = $${i + 1}`);
-              const values = fields.map(f => data[f]);
+              // WHERE placeholders occupy $1..$n — SET params must be numbered after them.
+              const setClauses: string[] = [];
+              const values: unknown[] = [];
+              let idx = conditions.length + 1;
+              for (const column of plan) {
+                const serialized = serializeParam(data![column.sourceKey], tableColumns.get(column.key));
+                setClauses.push(`"${column.key}" = $${idx}${serialized.cast}`);
+                values.push(serialized.value);
+                idx++;
+              }
               const sql = `UPDATE "${safeTable}" SET ${setClauses.join(", ")} ${whereClause} RETURNING *`;
-              const rows = await prisma.$queryRawUnsafe(sql, ...values, ...params) as unknown[];
+              const rows = await prisma.$queryRawUnsafe(sql, ...params, ...values) as unknown[];
               return asJson({ status: "SUCCESS" as const, output: { record: rows[0], updated: (rows as unknown[]).length, table: safeTable } });
             }
             case "delete": {
-              if (conditions.length === 0) {
+              if (userConditionCount === 0) {
                 throw new NodeExecutionError("Delete requires filter conditions — refusing to delete all rows. Set 'Filter Conditions' in the node config.");
               }
               const sql = `DELETE FROM "${safeTable}" ${whereClause} RETURNING *`;
@@ -1163,8 +1258,11 @@ export async function executeNode(node: WorkflowNode, input: Prisma.JsonValue | 
           }
         } catch (dbError) {
         if (dbError instanceof NodeExecutionError) throw dbError;
-        // DB connection/query failed — surface the real error instead of mocking data.
-        throw new NodeExecutionError(`Database ${operation} failed: ${dbError instanceof Error ? dbError.message : "unknown DB error"}`);
+        // DB connection/query failed — translate known PostgreSQL errors into
+        // actionable guidance; anything else keeps the raw message.
+        const friendly = await friendlyDbError(dbError, { table: safeTable, columns: tableColumns });
+        const raw = dbError instanceof Error ? dbError.message : "unknown DB error";
+        throw new NodeExecutionError(`Database ${operation} failed: ${friendly ?? raw}`);
       }
     }
     default:
