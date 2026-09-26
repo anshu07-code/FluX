@@ -12,6 +12,12 @@ export default defineConfig({
     env: {
       NODE_ENV: "test",
       EXECUTION_MODE: "local",
+      // Neutralize real mail credentials: workflow email nodes must hit the
+      // simulated path in tests (the root .env's live SMTP key would otherwise
+      // send — and Resend rejects the tests' example.com recipients with a 550).
+      SMTP_HOST: "",
+      SMTP_USER: "",
+      SMTP_PASS: "",
     },
   },
 });
